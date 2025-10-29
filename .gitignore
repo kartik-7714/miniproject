@@ -1,1 +1,44 @@
 node_modules/
+# Environment variables
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+backend/__pycache__/
+backend/__pycache__/*
+venv/
+backend/venv/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# FFmpeg (too large)
+backend/ffmpeg.exe
+
+# Vosk model (too large for GitHub)
+backend/vosk-model-small-en-us-0.15/
+
+# Temporary audio files
+*.wav
+*.webm
+*.mp3
+backend/*.wav
+backend/*.webm
+backend/*.mp3
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build files
+frontend/build/
+frontend/.next/
+

@@ -3,7 +3,6 @@ import csv
 import time
 import re
 import requests
-import json
 import speech_recognition as sr
 
 TWILIO_SID = os.getenv('TWILIO_SID', 'ACff9ab56f6046298714a4b29773ccf932')
@@ -30,19 +29,12 @@ class AIAgent:
     def transcribe_audio(self, audio_path):
         try:
             recognizer = sr.Recognizer()
-            
-            # Works with any audio format (WebM, WAV, MP3, etc.)
             with sr.AudioFile(audio_path) as source:
-                # Adjust for ambient noise
                 recognizer.adjust_for_ambient_noise(source, duration=0.2)
                 audio_data = recognizer.record(source)
-                
-            # Use Google Speech Recognition (free, no API key)
             text = recognizer.recognize_google(audio_data)
-            
             print(f"[Google API] ✅ Transcribed: {text}")
             return text
-            
         except sr.UnknownValueError:
             print("[Google API] Could not understand audio")
             return ''
@@ -107,7 +99,7 @@ class AIAgent:
         t = text.lower().strip()
         if any(w in t for w in ['urgent','critical','immediately','asap','now','emergency','high priority']): return True
         if any(w in t for w in ['जरूरी','तुरंत','इमरजेंसी','अभी']): return True
-        if any(w in t for w in ['ತುರ್ತು','ತಕ್ಷಣ','அவசரம்','உடனே','అత్యవసరం','ఇప్పుడే']): return True
+        if any(w in t for w in ['ತುರತು','ತಕ್ಷಣ','அவசரம்','உடனே','అత్యవసరం','ఇప్పుడే']): return True
         if any(w in t for w in ['عاجل','فوراً','فورا','ضروری','فوری']): return True
         return False
 
@@ -144,101 +136,57 @@ class AIAgent:
 
     def call_technician(self, technician, user_problem, diag_answers):
         if not technician:
-            return {'final': "No technician available at the moment. Please contact support directly.", 'events': ["No technician available right now."]}
-        tech_name = technician.get('Name','Unknown')
-        tech_phone = self._normalize_phone(technician.get('Contact',''))
-        tech_skillset = technician.get('Skillset','General Support')
+            return {'final': "No technician available at the moment. Please contact support directly.",
+                    'events': ["No technician available right now."]}
+        tech_name = technician.get('Name', 'Unknown')
+        tech_phone = self._normalize_phone(technician.get('Contact', ''))
+        tech_skillset = technician.get('Skillset', 'General Support')
         if not tech_phone:
-            return {'final': f"Selected {tech_name}, but no contact number available.", 'events': [f"Could not call {tech_name}: missing number."]}
+            return {'final': f"Selected {tech_name}, but no contact number available.",
+                    'events': [f"Could not call {tech_name}: missing number."]}
 
         diag_summary = ' '.join(diag_answers) if diag_answers else 'No additional details provided'
-        summary = f"New urgent IT support case. User problem: {user_problem}. Additional details: {diag_summary}."
-        events = ["Call connected. Awaiting technician response..."]
+        summary = f"{user_problem}. {diag_summary}"
+        events = ["Initiating conversational call with technician..."]
 
         try:
-            twiml = (
-                "<Response>"
-                  f"<Say>{summary}</Say>"
-                  "<Pause length='1'/>"
-                  "<Say>Please say the earliest time you can visit, for example: I can come at 3 PM.</Say>"
-                  "<Record maxLength='15' playBeep='true'/>"
-                  "<Pause length='1'/>"
-                  "<Say>Thanks. Please confirm the appointment by saying yes or no.</Say>"
-                  "<Record maxLength='5' playBeep='true'/>"
-                "</Response>"
-            )
-            twiml_url = "https://twimlets.com/echo?Twiml=" + requests.utils.quote(twiml, safe='')
+            webhook_url = f"https://ee7a6c5e298c.ngrok-free.app/twilio-ivr?step=greet&problem={requests.utils.quote(summary)}"
+            
             call_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Calls.json"
-            data = {'To': tech_phone, 'From': TWILIO_NUMBER, 'Url': twiml_url}
+            data = {
+                'To': tech_phone,
+                'From': TWILIO_NUMBER,
+                'Url': webhook_url
+            }
             resp = requests.post(call_url, data=data, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
 
             if resp.status_code not in (200, 201):
                 try:
                     j = resp.json()
-                    code = j.get('code'); msg = j.get('message') or j.get('more_info') or resp.text
+                    code = j.get('code')
+                    msg = j.get('message') or j.get('more_info') or resp.text
                     events.append(f"Twilio error: code={code}, msg={msg}")
                 except Exception:
                     events.append(f"Twilio error: {resp.text}")
                     code = None
                 if code in (21219, 21614, 21215, 21217):
                     return {'final': ("Unable to place the call due to Twilio permissions or an unverified destination number. "
-                                      "Verify the destination number and Voice Geo Permissions in Twilio, then try again."), 'events': events}
+                                     "Verify the destination number and Voice Geo Permissions in Twilio, then try again."), 'events': events}
                 return {'final': "Unable to reach a technician now. Your urgent ticket is escalated; expect a call within 30 minutes.", 'events': events}
 
-            call_sid = resp.json().get('sid','')
-            time.sleep(18)
-            recordings_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Calls/{call_sid}/Recordings.json"
-            recs = requests.get(recordings_url, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
-            items = []
-            if recs.status_code == 200:
-                items = recs.json().get('recordings', [])
-            if not items:
-                time.sleep(6)
-                recs2 = requests.get(recordings_url, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
-                if recs2.status_code == 200:
-                    items = recs2.json().get('recordings', [])
-            if not items:
-                return {'final': f"Called {tech_name}. Awaiting their confirmation; you will receive a callback shortly.", 'events': ["Technician did not leave a response yet."]}
-
-            def created_key(item): return item.get('date_created') or item.get('sid')
-            items = sorted(items, key=created_key)
-
-            def fetch_and_transcribe(sid: str) -> str:
-                rurl = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Recordings/{sid}.wav"
-                r = requests.get(rurl, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
-                if r.status_code != 200: return ""
-                tmp = "temp_rec.wav"
-                with open(tmp, "wb") as f: f.write(r.content)
-                txt = self.transcribe_audio(tmp)
-                try: os.unlink(tmp)
-                except Exception: pass
-                return txt
-
-            time_answer = fetch_and_transcribe(items[0]['sid'])
-            confirm_answer = fetch_and_transcribe(items[-1]['sid']) if len(items)>1 else ""
-
-            if time_answer:   events.append(f'Technician time: "{time_answer}"')
-            if confirm_answer: events.append(f'Technician confirmation: "{confirm_answer}"')
-
-            appt_time = self._extract_time(time_answer)
-            low = (confirm_answer or "").lower()
-            confirmed = any(x in low for x in ["yes","ok","okay","sure","confirm"])
-            declined  = any(x in low for x in ["no","can't","cannot","busy","decline"])
-
-            if confirmed and not declined:
-                when = appt_time or "as soon as possible"
-                return {'final': f"Appointment confirmed with {tech_name} ({tech_skillset}) at {when}. You will receive a call or visit shortly.", 'events': events}
-            elif declined:
-                return {'final': f"{tech_name} is unavailable. Escalating to the next technician; you will receive a callback soon.", 'events': events}
-            else:
-                maybe = appt_time or "soon"
-                return {'final': f"{tech_name} proposed {maybe} but did not clearly confirm. Dispatch will follow up to finalize.", 'events': events}
+            call_sid = resp.json().get('sid', '')
+            events.append(f"Call initiated successfully (SID: {call_sid})")
+            
+            return {
+                'final': f"Calling {tech_name} for a real-time conversation. The technician will be asked about appointment availability. This may take up to 2 minutes.",
+                'events': events
+            }
 
         except requests.Timeout:
             events.append("Technician call timed out.")
             return {'final': "Technician call timed out. Dispatch will retry shortly.", 'events': events}
         except Exception as e:
-            events.append("Unexpected telephony error.")
+            events.append(f"Unexpected telephony error: {str(e)}")
             return {'final': "Technical error while contacting technician. Your urgent ticket has been logged; support will call you within 30 minutes.", 'events': events}
 
     def process_conversation(self, step, transcript, diag_qns, diag_idx, diag_answers, user_problem, problem_type):
